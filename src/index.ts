@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import { parseEther, formatEther } from 'viem'
 import { createCanvas } from '@napi-rs/canvas'
-import commands from './commands'
+import { commands } from './commands'
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
