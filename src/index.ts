@@ -8,8 +8,8 @@ import { createCanvas } from '@napi-rs/canvas'
 import { commands } from './commands'
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-    commands,
-})
+    commands: [...commands] as { name: string; description: string }[],
+}) 
 
 // Game state types
 type Player = {
