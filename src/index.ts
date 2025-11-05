@@ -2,6 +2,7 @@ import { makeTownsBot } from '@towns-protocol/bot'
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import { parseEther, formatEther } from 'viem'
+import { createCanvas } from '@napi-rs/canvas'
 import commands from './commands'
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
@@ -81,6 +82,113 @@ function checkWinCondition(game: GameState): string | null {
         return alive[0].userId
     }
     return null
+}
+
+// Helper to generate BANG image
+async function generateBangImage(): Promise<Buffer> {
+    const width = 400
+    const height = 400
+    const canvas = createCanvas(width, height)
+    const ctx = canvas.getContext('2d')
+    
+    // Dark red/black background
+    const gradient = ctx.createRadialGradient(200, 200, 0, 200, 200, 250)
+    gradient.addColorStop(0, '#ff0000')
+    gradient.addColorStop(0.5, '#8b0000')
+    gradient.addColorStop(1, '#000000')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, width, height)
+    
+    // Explosion effect (circles)
+    ctx.fillStyle = '#ff6600'
+    ctx.beginPath()
+    ctx.arc(200, 200, 150, 0, Math.PI * 2)
+    ctx.fill()
+    
+    ctx.fillStyle = '#ffaa00'
+    ctx.beginPath()
+    ctx.arc(200, 200, 100, 0, Math.PI * 2)
+    ctx.fill()
+    
+    ctx.fillStyle = '#ffff00'
+    ctx.beginPath()
+    ctx.arc(200, 200, 50, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // BANG text
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 60px Arial'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 4
+    ctx.strokeText('BANG!', 200, 200)
+    ctx.fillText('BANG!', 200, 200)
+    
+    // Skull emoji style
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 80px Arial'
+    ctx.fillText('💀', 200, 300)
+    
+    return canvas.toBuffer('image/png')
+}
+
+// Helper to generate CLICK image
+async function generateClickImage(): Promise<Buffer> {
+    const width = 400
+    const height = 400
+    const canvas = createCanvas(width, height)
+    const ctx = canvas.getContext('2d')
+    
+    // Green/blue gradient background (relief/safe)
+    const gradient = ctx.createLinearGradient(0, 0, width, height)
+    gradient.addColorStop(0, '#1a5f3f')
+    gradient.addColorStop(0.5, '#2d8659')
+    gradient.addColorStop(1, '#4a9b73')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, width, height)
+    
+    // Safe circle in center
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 8
+    ctx.beginPath()
+    ctx.arc(200, 200, 120, 0, Math.PI * 2)
+    ctx.stroke()
+    
+    // Inner circle
+    ctx.strokeStyle = '#90ee90'
+    ctx.lineWidth = 4
+    ctx.beginPath()
+    ctx.arc(200, 200, 100, 0, Math.PI * 2)
+    ctx.stroke()
+    
+    // Checkmark
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 12
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(150, 200)
+    ctx.lineTo(180, 230)
+    ctx.lineTo(250, 160)
+    ctx.stroke()
+    
+    // CLICK text
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 50px Arial'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 3
+    ctx.strokeText('CLICK!', 200, 320)
+    ctx.fillText('CLICK!', 200, 320)
+    
+    // Relieved emoji
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 60px Arial'
+    ctx.fillText('😅', 200, 100)
+    
+    return canvas.toBuffer('image/png')
 }
 
 // Helper to format game status
@@ -268,12 +376,23 @@ bot.onSlashCommand('shoot', async (handler, { channelId, userId }) => {
         currentPlayer.alive = false
         const aliveCount = getAlivePlayers(game).length
         
+        // Generate BANG image
+        const bangImage = await generateBangImage()
+        
         await handler.sendMessage(
             channelId,
             `💥 **BANG!** <@${userId}> pulled the trigger and... lost! 💀\n\n` +
             `**Remaining Players:** ${aliveCount}\n` +
             `**Pot:** ${formatBalance(game.potBalance)}\n\n` +
-            `${aliveCount > 1 ? 'Game continues...' : ''}`
+            `${aliveCount > 1 ? 'Game continues...' : ''}`,
+            {
+                attachments: [{
+                    type: 'chunked',
+                    data: new Uint8Array(bangImage),
+                    filename: 'bang.png',
+                    mimetype: 'image/png',
+                }]
+            }
         )
         
         // Check win condition
@@ -306,12 +425,23 @@ bot.onSlashCommand('shoot', async (handler, { channelId, userId }) => {
         // 🔫 Click! Player survives
         game.potBalance += GRIT_BONUS
         
+        // Generate CLICK image
+        const clickImage = await generateClickImage()
+        
         await handler.sendMessage(
             channelId,
             `🔫 **CLICK!** <@${userId}> survived! 💪\n\n` +
             `**Grit Bonus:** +${formatBalance(GRIT_BONUS)} added to pot\n` +
             `**New Pot:** ${formatBalance(game.potBalance)}\n\n` +
-            `Next player's turn...`
+            `Next player's turn...`,
+            {
+                attachments: [{
+                    type: 'chunked',
+                    data: new Uint8Array(clickImage),
+                    filename: 'click.png',
+                    mimetype: 'image/png',
+                }]
+            }
         )
         
         // Advance to next player

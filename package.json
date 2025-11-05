@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@connectrpc/connect-node": "^2.1.0",
+    "@napi-rs/canvas": "^0.1.81",
     "@towns-protocol/bot": "^0.0.400",
     "@towns-protocol/proto": "^0.0.400",
     "@towns-protocol/web3": "^0.0.400",
