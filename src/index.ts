@@ -1,7 +1,9 @@
 import { makeTownsBot } from '@towns-protocol/bot'
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
-import { parseEther, formatEther } from 'viem'
+import { parseEther, formatEther, zeroAddress } from 'viem'
+import { execute } from 'viem/experimental/erc7821'
+import { waitForTransactionReceipt } from 'viem/actions'
 import { createCanvas } from '@napi-rs/canvas'
 import { commands } from './commands'
 
@@ -11,10 +13,15 @@ const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SE
 
 // Game state types
 type Player = {
-    userId: string
+    userId: string          // Towns user ID (for mentions)
+    smartAccountAddress: string  // Smart account address (for tips/payouts)
     alive: boolean
     lastAction: 'shoot' | 'pass' | null
 }
+
+// Map to track user eligibility: smartAccountAddress -> { userId, channelId }
+// This ensures we know which users have tipped and are eligible to play
+const eligiblePlayers = new Map<string, { userId: string; channelId: string }>()
 
 type GameState = {
     players: Player[]
@@ -27,11 +34,16 @@ type GameState = {
 // In-memory game storage (channelId -> GameState)
 const games = new Map<string, GameState>()
 
+// Bot app contract address (holds pot balance)
+const APP_CONTRACT_ADDRESS = '0xfB9FAA57889419B39ba12d8B53AedC9ac1Bf1Cce' as const
+
 // Game amounts (configured for Base Sepolia testnet)
 // Using smaller amounts for testnet - adjust as needed
-const ENTRY_FEE = parseEther('0.001') // 0.001 ETH entry fee (testnet)
 const PASS_BURN = parseEther('0.0005') // 0.0005 ETH burn on pass
 const GRIT_BONUS = parseEther('0.001') // +0.001 ETH on successful shoot
+
+// Minimum tip to join (informational only - any amount accepted)
+const MIN_TIP = parseEther('0.0001') // Minimum suggested tip
 
 // Helper to get alive players
 function getAlivePlayers(game: GameState): Player[] {
@@ -247,39 +259,41 @@ bot.onTip(async (handler, event) => {
         return
     }
     
-    // Check if player already joined
-    const existingPlayer = game.players.find(p => p.userId === event.senderAddress)
+    // Track this user as eligible (smart account -> Towns user ID mapping)
+    const smartAccountAddress = event.senderAddress.toLowerCase()
+    eligiblePlayers.set(smartAccountAddress, {
+        userId: event.userId,
+        channelId: channelId,
+    })
+    
+    // Check if player already joined (by smart account address or userId)
+    const existingPlayer = game.players.find(
+        p => p.smartAccountAddress.toLowerCase() === smartAccountAddress || p.userId === event.userId
+    )
     if (existingPlayer) {
         await handler.sendMessage(
             channelId,
-            `<@${event.senderAddress}> You're already in the game! Use \`/start-game\` when ready.`
+            `<@${event.userId}> You're already in the game! Use \`/start-game\` when ready.`
         )
         return
     }
     
-    // Check if tip amount matches entry fee
-    if (event.amount < ENTRY_FEE) {
-        await handler.sendMessage(
-            channelId,
-            `<@${event.senderAddress}> Entry fee is ${formatBalance(ENTRY_FEE)}. You tipped ${formatBalance(event.amount)}.`
-        )
-        return
-    }
-    
-    // Add player and update pot
+    // Accept any tip amount - add full amount to pot
+    // Add player and update pot with full tip amount
     game.players.push({
-        userId: event.senderAddress,
+        userId: event.userId,  // Towns user ID for mentions
+        smartAccountAddress: event.senderAddress,  // Smart account for payouts
         alive: true,
         lastAction: null,
     })
-    game.potBalance += ENTRY_FEE
+    game.potBalance += event.amount
     
     const tipAmount = formatBalance(event.amount)
-    const extra = event.amount > ENTRY_FEE ? ` (Extra ${formatBalance(event.amount - ENTRY_FEE)} added to pot!)` : ''
     
+    // Mention the user so they know they're eligible
     await handler.sendMessage(
         channelId,
-        `✅ <@${event.senderAddress}> joined the game! ${tipAmount} entry fee received.${extra}\n\n` +
+        `✅ <@${event.userId}> joined the game! ${tipAmount} tip received.\n\n` +
         `**Players:** ${game.players.length}\n` +
         `**Pot:** ${formatBalance(game.potBalance)}\n\n` +
         `Use \`/start-game\` to begin when ready!`
@@ -290,10 +304,10 @@ bot.onTip(async (handler, event) => {
 bot.onSlashCommand('join-game', async (handler, { channelId, userId }) => {
     await handler.sendMessage(
         channelId,
-        `To join the game, tip me ${formatBalance(ENTRY_FEE)} using the Towns tipping feature.\n\n` +
+        `To join the game, tip me any amount using the Towns tipping feature.\n\n` +
         `**How to tip:**\n` +
         `1. Click the 💸 tip button on any of my messages\n` +
-        `2. Enter ${formatBalance(ENTRY_FEE)} as the amount\n` +
+        `2. Enter any amount you'd like to contribute to the pot\n` +
         `3. Confirm the tip\n\n` +
         `Once you've tipped, you'll be added to the game!`
     )
@@ -317,7 +331,7 @@ bot.onSlashCommand('start-game', async (handler, { channelId, userId }) => {
         await handler.sendMessage(
             channelId,
             `Need at least 2 players to start. Currently ${game.players.length} player(s) joined.\n\n` +
-            `Tip the bot ${formatBalance(ENTRY_FEE)} to join!`
+            `Tip the bot any amount to join!`
         )
         return
     }
@@ -405,7 +419,7 @@ bot.onSlashCommand('shoot', async (handler, { channelId, userId }) => {
                 `🏆 **GAME OVER!**\n\n` +
                 `<@${winner}> is the last survivor and wins the pot of ${formatBalance(game.potBalance)}! 🎉\n\n` +
                 `${formatGameStatus(game)}\n\n` +
-                `Start a new game by having players tip the bot ${formatBalance(ENTRY_FEE)} to join!`
+                `Start a new game by having players tip the bot to join!`
             )
             // Reset game for next round
             games.delete(channelId)
@@ -541,7 +555,7 @@ bot.onSlashCommand('game-status', async (handler, { channelId }) => {
     if (!game) {
         await handler.sendMessage(
             channelId,
-            `No game in progress. Start a new game by having players tip the bot ${formatBalance(ENTRY_FEE)} to join!`
+            `No game in progress. Start a new game by having players tip the bot to join!`
         )
         return
     }
@@ -555,7 +569,7 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         channelId,
         '**🎰 Deadman\'s Tip - Help**\n\n' +
         '**How to Play:**\n' +
-        `1. Tip the bot ${formatBalance(ENTRY_FEE)} to join the game\n` +
+        `1. Tip the bot any amount to join the game\n` +
         '2. Use `/start-game` when 2+ players have joined\n' +
         '3. On your turn, choose `/shoot` or `/pass`\n' +
         '4. Last player standing wins the pot!\n\n' +
